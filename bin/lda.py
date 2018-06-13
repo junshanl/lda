@@ -70,11 +70,12 @@ class LDA():
         return total / size
 
     def e_step(self, X, lamb):
-        gamma = np.random.gamma(100., 1./100., (self.m, self.k)) 
+        #gamma = np.random.gamma(100., 1./100., (self.m, self.k)) 
+        gamma = np.ones((self.m, self.k))
         Elogbeta = self.dirichlet_expectation_2d(lamb)
         sstats = np.zeros((self.k, self.d))
        
-       for i in range(100):
+        for i in range(100):
             last_gamma = gamma.copy()
             Elogtheta = self.dirichlet_expectation_2d(gamma)
            
@@ -83,16 +84,24 @@ class LDA():
             for m, words in enumerate(self.W):
                 phi = np.exp(Elogbeta[:, words] + Elogtheta[m,:, np.newaxis])
                 phi = phi / normphi[m, words] 
-                gamma[m] = self.alpha + phi_d
+                gamma[m] = self.alpha + np.sum(phi, axis=1)
             
             if np.sum(self.mean_change(last_gamma, gamma)) / self.k < 1e-3:
-                break
+                break  
+        
+        for m, words in enumerate(self.W):
+            phi = np.exp(Elogbeta[:, words] + Elogtheta[m,:, np.newaxis])
+            phi = phi / normphi[m, words]
+            for i, w in enumerate(words):
+                sstats[:, w] += phi[:,i]
+
         return gamma, sstats
 
     def m_step(self, sstats, lamb, n_iter):
         rhot = np.power(self.learning_offset + n_iter,
                               -self.learning_decay)
-        return lamb * (1-rhot) + rhot * (self.eta + self.m * sstats / self.d)
+        # return lamb * (1-rhot) + rhot * (self.eta + self.m * sstats / self.d)
+        return self.eta + sstats
 
     def approx_bound(self, X, gamma, lamb):
         M = len(X)
@@ -126,14 +135,15 @@ class LDA():
 
 
     def em(self):
-        lamb = 1./self.d + np.random.rand(self.k, self.d)
+        lamb = np.random.gamma(100., 1./100., (self.k, self.d)) 
+        #lamb = 1./self.d + np.random.rand(self.k, self.d)
 
         for n_iter in range(10):
 
             gamma, sstats = self.e_step(self.W, lamb)
+            lamb = self.m_step(sstats, lamb, n_iter)
             bound = self.approx_bound(self.W, gamma, lamb)
             print bound
-            lamb = self.m_step(sstats, lamb, n_iter)
         
         return lamb 
 
@@ -270,6 +280,7 @@ lda = LDA()
 lda.fit(sample, words_dict.items(), 5)
 lamb = lda.em()
 print np.sum(lamb, axis=1)
+print lamb
 '''
 lda.mcmc_train()
 lda.save_model('./bin/')
