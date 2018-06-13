@@ -171,8 +171,8 @@ class LDA():
             for j in range(len(self.W[i])):
                 w = self.W[i][j]
                 z = self.Z[i][j]
-                p += np.log((float(self.nmk[i][z]) / self.nmksum[i]) * (float(self.ndk[w][z]) / self.ndksum[z])) 
-        return p 
+                p += np.log((float(self.nmk[i][z]) / self.nmksum[i]) * (float(self.ndk[w][z]) / self.ndksum[z]))
+        return p
 
     def save_model(self, path):
         with open(os.path.join(path,"Z.csv"), 'wb') as f:
@@ -187,7 +187,7 @@ class LDA():
 
 sample = []
 
-def to_word_list(context):   
+def to_word_list(context): 
     context = context.replace(',','')
     context = context.replace('.','')
     context = context.split('\n')
