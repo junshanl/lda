@@ -2,7 +2,7 @@ import numpy as np
 import random
 import glob
 import os
-from scipy.special import digamma
+from scipy.special import digamma, gammaln
 
 
 class LDA():
@@ -40,6 +40,10 @@ class LDA():
         self.ndksum = np.sum(self.ndk, axis=0)
         self.alpha = 1. 
         self.beta = 1.
+        self.eta = 1.
+
+        self.learning_decay = .7
+        self.learning_offset = 10.
 
     def dirichlet_expectation_2d(self, arr):
         n_rows = arr.shape[0]
@@ -57,27 +61,81 @@ class LDA():
 
         return d_exp
 
-    def expeactaion(self):
-        a = self.dirichlet_expectation_2d(self.topic_word_distr)
-        b = self.dirichlet_expectation_2d(self.doc_topic_distr)
-        
-        topic_word_sum = np.zeros((self.k, self.d))
-        for m, words in enumerate(self.W):
-            doc_topic_sum = np.zeros(self.k)
-            for w in words:
-                tau = np.exp(a[:, w] + b[m, :])
-                tau = tau / np.sum(tau)
-                doc_topic_sum += tau
+    def mean_change(self, arr_1, arr_2):
+        size = arr_1.shape[0]
+        total = 0.0
+        for i in range(size):
+            diff = np.fabs(arr_1[i] - arr_2[i])
+            total += diff
+        return total / size
+
+    def e_step(self, X, lamb):
+        gamma = np.random.gamma(100., 1./100., (self.m, self.k)) 
+        Elogbeta = self.dirichlet_expectation_2d(lamb)
+        sstats = np.zeros((self.k, self.d))
+       
+       for i in range(100):
+            last_gamma = gamma.copy()
+            Elogtheta = self.dirichlet_expectation_2d(gamma)
            
-            self.doc_topic_distr[m] = self.alpha + doc_topic_sum
-        self.topic_word_distr = self.beta + topic_word_sum
+            normphi = np.dot(np.exp(Elogtheta), np.exp(Elogbeta))
+
+            for m, words in enumerate(self.W):
+                phi = np.exp(Elogbeta[:, words] + Elogtheta[m,:, np.newaxis])
+                phi = phi / normphi[m, words] 
+                gamma[m] = self.alpha + phi_d
+            
+            if np.sum(self.mean_change(last_gamma, gamma)) / self.k < 1e-3:
+                break
+        return gamma, sstats
+
+    def m_step(self, sstats, lamb, n_iter):
+        rhot = np.power(self.learning_offset + n_iter,
+                              -self.learning_decay)
+        return lamb * (1-rhot) + rhot * (self.eta + self.m * sstats / self.d)
+
+    def approx_bound(self, X, gamma, lamb):
+        M = len(X)
+
+        score = 0
+        Elogtheta = self.dirichlet_expectation_2d(gamma)
+        Elogbeta = self.dirichlet_expectation_2d(lamb)
+
+        # E[log p(docs | theta, beta)]
+        for d in range(0, M):
+            gammad = gamma[d, :]
+            x = X[d]
+            phinorm = np.zeros(len(x))
+            for i in range(0, len(x)):
+                phi = Elogtheta[d, :] + Elogbeta[:, x[i]]
+                phinorm[i] = np.log(sum(np.exp(phi)))
+            score += np.sum(phinorm)
+
+        # E[log p(theta | alpha) - log q(theta | gamma)]
+        score += np.sum((self.alpha - gamma)*Elogtheta)
+        score += np.sum(gammaln(gamma) - gammaln(self.alpha))
+        score += np.sum(gammaln(self.alpha*self.k) - gammaln(np.sum(gamma, 1)))
+
+
+        # E[log p(beta | eta) - log q (beta | lambda)]
+        score += np.sum((self.eta - lamb)* Elogbeta)
+        score += np.sum(gammaln(lamb) - gammaln(self.eta))
+        score += np.sum(gammaln(self.eta*self.d) - gammaln(np.sum(lamb, 1)))
+
+        return score 
+
 
     def em(self):
-        self.topic_word_distr = np.ones((self.k, self.d)) 
-        self.doc_topic_distr = np.ones((self.m , self.k))
+        lamb = 1./self.d + np.random.rand(self.k, self.d)
+
+        for n_iter in range(10):
+
+            gamma, sstats = self.e_step(self.W, lamb)
+            bound = self.approx_bound(self.W, gamma, lamb)
+            print bound
+            lamb = self.m_step(sstats, lamb, n_iter)
         
-        for n_iter in range(1):
-            self.expeactaion()
+        return lamb 
 
     def mcmc_train(self):
         for n_iter in range(100):
@@ -210,8 +268,8 @@ sample = word_to_idx(sample, words_dict)
 
 lda = LDA()
 lda.fit(sample, words_dict.items(), 5)
-lda.em()
-
+lamb = lda.em()
+print np.sum(lamb, axis=1)
 '''
 lda.mcmc_train()
 lda.save_model('./bin/')
@@ -222,3 +280,18 @@ print lda.Z[-10:]
 print show(lda.W[0:10], lda.Z[0:10], idx_dict)
 print show(lda.W[-10:], lda.Z[-10:], idx_dict)
 '''
+
+from sklearn.decomposition import LatentDirichletAllocation
+
+lda = LatentDirichletAllocation(n_components=5, verbose=1)
+
+m = len(sample)
+d = len(words_dict.items())
+X = np.zeros((m, d), np.float)
+for i, s in enumerate(sample):
+    for w in s:
+       X[i][w] += 1 
+lda.fit(X)
+print np.sum(lda.components_,axis=1)
+print lda.bound_
+print lda.components_
