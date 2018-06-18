@@ -1,49 +1,75 @@
 import numpy as np
 import random
-import glob
+
 import os
-from scipy.special import digamma, gammaln
+from scipy.special import digamma, gammaln, gamma
+
 
 
 class LDA():
 
-    def __init__(self):
+    def __init__(self, n_components, method='em'):
+        self.k = n_components
+        self.method = method
+        self.alpha = 1. / self.k
+        self.eta = 1. / self.k
         pass
    
-    def random_topic_assign(self, X, d):
+    def _random_topic_assign(self, X, d):
         z = []
         for x in X:
             z.append(np.array(np.round(np.random.rand(len(x),)*(d-1)), dtype=np.int))
         return z
 
-  
-    def fit(self, X, dic, k):
-        m = len(X)
-        d = len(dic)
-        self.m = len(X)
-        self.d = len(dic)
-        self.k = k
-        self.dic = dic 
-        self.W = X
-        self.Z = self.random_topic_assign(X, k)
-        self.nmk = np.zeros((m, k), np.int)
-        self.ndk = np.zeros((d, k), np.int)
-        
+    def _check_wordlist(self, X, dic):
+        if dic is None:
+            raise Exception('dic is not initialized')
+        for x in X:
+            for w in x:
+                if not dic[w]:
+                    raise Exception('{} not in dic'.format(x))
+
+
+    def _init_mcmc_vars(self):
+        self.Z = self.random_topic_assign(self.X, self.k)
+        self.nmk = np.zeros((self.m, self.k), np.int)
+        self.ndk = np.zeros((self.d, self.k), np.int)
+
         for i in range(self.m):
-            for j in range(len(self.W[i])):
+            for j in range(len(X)):
                 t = self.Z[i][j]
-                w = self.W[i][j]
+                w = self.X[i][j]
                 self.nmk[i][t]+=1
                 self.ndk[w][t]+=1
 
         self.nmksum = np.sum(self.nmk, axis=1)
         self.ndksum = np.sum(self.ndk, axis=0)
-        self.alpha = 1. / self.k
-        self.beta = 1.
-        self.eta = 1. / self.k
 
-        self.learning_decay = .7
-        self.learning_offset = 10.
+
+    def fit(self, X, dic):
+        self.m = len(X)
+        self.d = len(dic)
+
+        self.dic = dic
+        self.X = X
+        self._check_wordlist(self.X, self.dic)
+
+        if self.method == 'em':
+
+            self.lamb = self.em()
+        elif self.method == 'mcmc':
+            self._init_mcmc_vars(X)
+        else:
+            raise Exception('method should be em or mcmc')
+
+    def transform(self, X):
+        self._check_wordlist(X, self.dic)
+        if self.lamb.shape == None:
+            raise Exception('not trained lda ')
+
+        doc_topic_distr, _  = self.e_step(X, self.lamb)
+        return doc_topic_distr / np.sum(doc_topic_distr, axis=1)[:, np.newaxis]
+
 
     def dirichlet_expectation_2d(self, arr):
         n_rows = arr.shape[0]
@@ -69,9 +95,10 @@ class LDA():
             total += diff
         return total / size
 
-    def e_step(self, X, lamb):
-        #gamma = np.random.gamma(100., 1./100., (self.m, self.k)) 
-        gamma = np.ones((self.m, self.k))
+    def e_step(self, X,  lamb):
+        n_sample = len(X)
+        gamma = np.random.gamma(100., 1./100., (n_sample, self.k))
+        #gamma = np.ones((self.m, self.k))
         Elogbeta = self.dirichlet_expectation_2d(lamb)
         sstats = np.zeros((self.k, self.d))
        
@@ -81,7 +108,7 @@ class LDA():
            
             normphi = np.dot(np.exp(Elogtheta), np.exp(Elogbeta))
 
-            for m, words in enumerate(self.W):
+            for m, words in enumerate(X):
                 phi = np.exp(Elogbeta[:, words] + Elogtheta[m,:, np.newaxis])
                 phi = phi / normphi[m, words] 
                 gamma[m] = self.alpha + np.sum(phi, axis=1)
@@ -89,17 +116,16 @@ class LDA():
             if np.sum(self.mean_change(last_gamma, gamma)) / self.k < 1e-3:
                 break
         
-        for m, words in enumerate(self.W):
-            phi = np.exp(Elogbeta[:, words] + Elogtheta[m,:, np.newaxis])
+        for m, words in enumerate(X):
+            phi = np.exp(Elogbeta[:, words] + Elogtheta[m, :, np.newaxis])
             phi = phi / normphi[m, words]
             for i, w in enumerate(words):
-                sstats[:, w] += phi[:,i]
+                sstats[:, w] += phi[:, i]
 
         return gamma, sstats
 
     def m_step(self, sstats, lamb, n_iter):
-        rhot = np.power(self.learning_offset + n_iter,
-                              -self.learning_decay)
+        # rhot = np.power(self.learning_offset + n_iter, -self.learning_decay)
         # return lamb * (1-rhot) + rhot * (self.eta + self.m * sstats / self.d)
         return self.eta + sstats
 
@@ -109,9 +135,15 @@ class LDA():
         Elogbeta = self.dirichlet_expectation_2d(lamb)
 
         # E[log p(docs | theta, beta)]
+        '''
         for m, words in enumerate(X):
             phi = np.exp(Elogbeta[:, words] + Elogtheta[m, :, np.newaxis])
-            score += np.sum(np.log(np.sum(phi, axis=0)))
+            score += np.sum(np.log(np.sum(phi, axis=0)))\
+        '''
+        normphi = np.dot(np.exp(Elogtheta), np.exp(Elogbeta))
+
+        for m, words in enumerate(X):
+            score += np.sum(np.log(normphi[m, words]))
 
         # E[log p(theta | alpha) - log q(theta | gamma)]
         score += np.sum((self.alpha - gamma)*Elogtheta)
@@ -119,7 +151,7 @@ class LDA():
         score += np.sum(gammaln(self.alpha*self.k) - gammaln(np.sum(gamma, 1)))
 
         # E[log p(beta | eta) - log q (beta | lambda)]
-        score += np.sum((self.eta - lamb)* Elogbeta)
+        score += np.sum((self.eta - lamb)*Elogbeta)
         score += np.sum(gammaln(lamb) - gammaln(self.eta))
         score += np.sum(gammaln(self.eta*self.d) - gammaln(np.sum(lamb, 1)))
         return score
@@ -127,15 +159,13 @@ class LDA():
 
     def em(self):
         lamb = np.random.gamma(100., 1./100., (self.k, self.d)) 
-        #lamb = 1./self.d + np.random.rand(self.k, self.d)
 
-        for n_iter in range(10):
-
-            gamma, sstats = self.e_step(self.W, lamb)
+        for n_iter in range(40):
+            gamma, sstats = self.e_step(self.X, lamb)
             lamb = self.m_step(sstats, lamb, n_iter)
-            bound = self.approx_bound(self.W, gamma, lamb)
-            print bound
-        
+            bound = self.approx_bound(self.X, gamma, lamb)
+            print "llh for ELBO: {}".format(bound)
+
         return lamb 
 
     def mcmc_train(self):
@@ -166,16 +196,13 @@ class LDA():
             print "iteration {}".format(n_iter)
             print "score {}".format(self.score())
 
-    def score(self):
-        p = 0.
-        for i in range(self.m):
-            for j in range(len(self.W[i])):
-                w = self.W[i][j]
-                z = self.Z[i][j]
-                p += np.log((float(self.nmk[i][z]) / self.nmksum[i]) * (float(self.ndk[w][z]) / self.ndksum[z]))
-        return p
+    def score_em(self, X):
+        pass
 
-    def save_model(self, path):
+    def score_mcmc(self, X, Z):
+        pass
+'''
+    def _save_model(self, path):
         with open(os.path.join(path,"Z.csv"), 'wb') as f:
             np.savetxt(f, self.Z, delimiter=",", fmt='%5s')
         with open(os.path.join(path,"W.csv"), 'wb') as f:
@@ -186,124 +213,4 @@ class LDA():
         with open(os.path.join(path,"ndk.csv"), 'wb') as f:
             np.savetxt(f, self.ndk, delimiter=",", fmt='%5s')
 
-sample = []
-
-def to_word_list(context): 
-    context = context.replace(',','')
-    context = context.replace('.','')
-    context = context.split('\n')
-    context = [c.split(' ') for c in context]
-    result = []
-    for c in context:
-        c = [w.lower() for w in c]
-        if '' in c:
-            c.remove('')
-            if len(c) > 0:
-                result.append(c)
-        else:
-            result.append(c)
-
-    return result 
-
-
-def create_dict(path, stop_words=None): 
-    all_path = glob.glob(path)
-    sample = []
-    for p in all_path:
-        with open(p, 'rb') as f:
-            context = f.read()
-            sample.extend(to_word_list(context))
-    
-    tmp = []
-    [tmp.extend(s) for s in sample]
-    words = list(set(tmp))
-
-    if stop_words != None:
-        for w in stop_words:
-            if w in words:
-                words.remove(w)
-    
-    word_dic = {}
-    idx_dic = {}
-    for idx, w in enumerate(words):
-        word_dic[w] = idx
-        idx_dic[idx] =  w        
-    
-    return word_dic, idx_dic
-
-def load_data(path):
-    all_path = glob.glob(path)
-    sample = []
-    for p in all_path:
-        with open(p, 'rb') as f:
-            context = f.read()
-            sample.extend(to_word_list(context))
-    return sample    
-
-def word_to_idx(sample, words_dict):
-    sample = [[words_dict[w] for w in s if w in words_dict] for s in sample]
-    return sample
-
-
-def show(W, Z, idx_dict):
-    for w,z in zip(W,Z):
-        line = {}
-        for word, topic in zip(w,z):
-            line[idx_dict[word]] = topic
-        print line 
-
-
-with open('./stop_words_eng.txt') as f:
-    stop_words = f.read()
-    stop_words = stop_words.replace('\r','')
-    stop_words =stop_words.split("\n")
-
-
-full_path = "../data/*/*.txt"
-train_path = "../data/train/*.txt"
-
-
-words_dict, idx_dict = create_dict(full_path, stop_words)
-sample = load_data(train_path)
-sample = word_to_idx(sample, words_dict)
-
-lda = LDA()
-lda.fit(sample, words_dict.items(), 5)
-lamb = lda.em()
-print np.sum(lamb, axis=1)
-print lamb
 '''
-lda.mcmc_train()
-lda.save_model('./bin/')
-
-print lda.ndksum
-print lda.Z[0:10]
-print lda.Z[-10:]
-print show(lda.W[0:10], lda.Z[0:10], idx_dict)
-print show(lda.W[-10:], lda.Z[-10:], idx_dict)
-'''
-
-from sklearn.decomposition import LatentDirichletAllocation
-
-lda2 = LatentDirichletAllocation(n_components=5, learning_method = 'batch', verbose=1)
-
-m = len(sample)
-d = len(words_dict.items())
-X = np.zeros((m, d), np.float)
-for i, s in enumerate(sample):
-    for w in s:
-       X[i][w] += 1 
-lda2.fit(X)
-print np.sum(lda2.components_,axis=1)
-print lda2.bound_
-print lda2.components_
-
-random_state = lda2.random_state_
-gamma = lda2.transform(X)
-print np.sum(gamma, axis=0)
-print lda.approx_bound(sample, lda.e_step(sample, lda2.components_)[0], lda2.components_)
-
-
-print np.sum(lda.e_step(sample, lda2.components_)[0], axis=0)
-print np.sum(lda.e_step(sample, lamb)[0], axis=0)
-print lda.approx_bound(sample, lda.e_step(sample, lamb)[0], lamb)

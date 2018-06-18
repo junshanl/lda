@@ -1,6 +1,6 @@
 import numpy as np
 from sklearn.metrics import accuracy_score, classification_report
-from train import train_model, score
+from naive_bayes import train_model, score
 
 relevant_sample = []
 irrelevant_sample = []
